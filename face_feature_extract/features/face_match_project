@@ -1,0 +1,154 @@
+import face_recognition
+import numpy as np
+import json
+import os
+from PIL import Image, ImageDraw
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE  = os.path.join(BASE_DIR, "face_database.json")
+
+
+def save_face(image_path, name):
+    image = face_recognition.load_image_file(image_path)
+    encodings = face_recognition.face_encodings(image)
+
+    if not encodings:
+        print(f"  No face found in '{image_path}' — skipping")
+        return False
+
+    db = load_database()
+    db[name] = {
+        "encoding":   encodings[0].tolist(),
+        "image_path": image_path
+    }
+    with open(DB_FILE, "w") as f:
+        json.dump(db, f, indent=2)
+
+    print(f"  Saved '{name}'")
+    return True
+
+
+def load_database():
+    if not os.path.exists(DB_FILE):
+        return {}
+    with open(DB_FILE, "r") as f:
+        return json.load(f)
+
+
+def load_all_from_folder(folder_path):
+    """Register all images in a folder. Filename = person's name."""
+    print(f"\nLoading images from: {folder_path}")
+    count = 0
+    for filename in os.listdir(folder_path):
+        if filename.lower().endswith((".jpg", ".jpeg", ".png")):
+            name       = os.path.splitext(filename)[0]  # e.g. "Alice" from "Alice.jpg"
+            image_path = os.path.join(folder_path, filename)
+            success    = save_face(image_path, name)
+            if success:
+                count += 1
+    print(f"\nDone — {count} faces saved to database.")
+
+
+def compare_face(new_image_path, tolerance=0.5):
+    db = load_database()
+
+    if not db:
+        print("Database is empty.")
+        return []
+
+    new_image     = face_recognition.load_image_file(new_image_path)
+    new_encodings = face_recognition.face_encodings(new_image)
+
+    if not new_encodings:
+        print("No face found in the query image.")
+        return []
+
+    new_encoding = new_encodings[0]
+    names        = list(db.keys())
+    stored       = [np.array(db[n]["encoding"]) for n in names]
+    distances    = face_recognition.face_distance(stored, new_encoding)
+
+    results = []
+    for name, distance in zip(names, distances):
+        confidence = round((1 - distance) * 100, 2)
+        matched    = distance <= tolerance
+        results.append({
+            "name":       name,
+            "matched":    matched,
+            "confidence": confidence,
+            "distance":   round(float(distance), 4)
+        })
+
+    results.sort(key=lambda x: x["confidence"], reverse=True)
+    return results
+
+
+def print_results(results):
+    print("\n-- Comparison Results ------------------------------------------")
+    for r in results:
+        status = "MATCH" if r["matched"] else "no match"
+        bar    = "#" * int(r["confidence"] / 5)
+        print(f"  {r['name']:<20} {status:<12} {r['confidence']:>6.2f}%  {bar}")
+
+    print()
+    matches = [r for r in results if r["matched"]]
+    if matches:
+        best = matches[0]
+        print(f"  Best match -> {best['name']} ({best['confidence']}% confidence)")
+    else:
+        print("  No match found in the database.")
+
+
+def annotate_result(new_image_path, results, output_path="result.png"):
+    image     = face_recognition.load_image_file(new_image_path)
+    locations = face_recognition.face_locations(image)
+
+    pil_image = Image.fromarray(image)
+    draw      = ImageDraw.Draw(pil_image)
+
+    matches = [r for r in results if r["matched"]]
+    label   = matches[0]["name"] + f" ({matches[0]['confidence']}%)" if matches else "Unknown"
+    color   = "lime" if matches else "red"
+
+    for (top, right, bottom, left) in locations:
+        draw.rectangle([left, top, right, bottom], outline=color, width=3)
+        draw.rectangle([left, bottom, right, bottom + 24], fill=color)
+        draw.text((left + 6, bottom + 4), label, fill="black")
+
+    out = os.path.join(BASE_DIR, output_path)
+    pil_image.save(out)
+    print(f"  Annotated image saved -> {out}")
+    pil_image.show()
+
+
+def show_database():
+    db = load_database()
+    if not db:
+        print("Database is empty.")
+        return
+    print("\n-- Stored Faces ------------------------------------------------")
+    for i, name in enumerate(db, 1):
+        print(f"  {i}. {name}")
+    print()
+
+
+# ─── Main ─────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+
+    # !! CHANGE THESE TWO PATHS !!
+    FACES_FOLDER  = r"D:\face_feature_extract\features\FACES"  # folder with 40 images
+    QUERY_IMAGE   = r"D:\face_feature_extract\features\new_personn.jpg"  # image to search
+
+    # Step 1 — Load all 40 images into database
+    load_all_from_folder(FACES_FOLDER)
+
+    # Step 2 — Show what's stored
+    show_database()
+
+    # Step 3 — Search for the query face
+    print("Comparing query image...")
+    results = compare_face(QUERY_IMAGE, tolerance=0.5)
+
+    # Step 4 — Print and annotate
+    print_results(results)
+    annotate_result(QUERY_IMAGE, results)
